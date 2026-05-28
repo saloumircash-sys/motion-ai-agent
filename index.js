@@ -8,64 +8,66 @@ const util = require('util');
 
 const execAsync = util.promisify(exec);
 
-// ── Validar variables de entorno ─────────────────────────────────────────────
 if (!process.env.TELEGRAM_TOKEN || !process.env.ANTHROPIC_API_KEY) {
   console.error('❌ Faltan variables de entorno: TELEGRAM_TOKEN y/o ANTHROPIC_API_KEY');
   process.exit(1);
 }
+
+const IS_WINDOWS = process.platform === 'win32';
+const SHELL      = IS_WINDOWS ? 'powershell.exe' : 'bash';
+const WORK_DIR   = process.env.WORK_DIR || (IS_WINDOWS ? 'C:\\Users\\M11' : '/app');
 
 const bot       = new Telegraf(process.env.TELEGRAM_TOKEN);
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL     = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 const OWNER_ID  = process.env.TELEGRAM_OWNER_ID?.trim() || null;
 
-// Historial de conversación por chat (en memoria; se resetea al reiniciar)
 const conversations = new Map();
 
 // ── System prompt ─────────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `Eres un asistente AI con acceso completo al PC del usuario (Windows 11).
-Puedes ejecutar comandos de PowerShell, leer y escribir archivos, y gestionar proyectos de código.
+const SYSTEM_PROMPT = `Eres un asistente AI con acceso completo al servidor donde estás desplegado.
+Plataforma actual: ${IS_WINDOWS ? 'Windows (local)' : 'Linux (Railway)'}
+Directorio base: ${WORK_DIR}
+Shell disponible: ${IS_WINDOWS ? 'PowerShell' : 'bash'}
 
-Proyectos disponibles:
-- rentnft-bot:     C:\\Users\\M11\\rentnft-bot
-- motion-ai-agent: C:\\Users\\M11\\motion-ai-agent
+Proyectos en GitHub (https://github.com/saloumircash-sys):
+- motion-ai-agent: este mismo bot, desplegado en Railway
+- rentnft-bot:     bot de Discord con IA, NFT y tickets
 
 Capacidades:
+- Ejecutar comandos ${IS_WINDOWS ? 'PowerShell' : 'bash'} (npm, node, git, curl, etc.)
 - Crear, leer, editar y listar archivos
-- Ejecutar comandos PowerShell (npm, node, git, railway, etc.)
-- Deployar en Railway: railway up
+- Clonar repos de GitHub y hacer push/pull
 - Instalar dependencias: npm install
 - Commit y push: git add . && git commit -m "..." && git push
+- Consultar APIs externas con curl
 
-Reglas de comportamiento:
+Reglas:
 - Responde siempre en el idioma del usuario
 - Para tareas simples ejecuta directamente, sin pedir confirmación innecesaria
 - Muestra el output relevante de los comandos
 - Si algo falla, diagnostica el error y aplica o propón la solución
 - Usa las herramientas proactivamente para completar la tarea`;
 
-// ── Definición de herramientas ────────────────────────────────────────────────
+// ── Herramientas ───────────────────────────────────────────────────────────────
 const TOOLS = [
   {
     name: 'execute_command',
     description:
-      'Ejecuta un comando de PowerShell en el PC. ' +
-      'Úsalo para correr scripts, instalar paquetes, hacer git, railway deploy, etc.',
+      `Ejecuta un comando de ${IS_WINDOWS ? 'PowerShell' : 'bash'} en el servidor. ` +
+      'Úsalo para correr scripts, instalar paquetes, git, curl, etc.',
     input_schema: {
       type: 'object',
       properties: {
-        command: { type: 'string', description: 'Comando PowerShell a ejecutar' },
-        cwd: {
-          type: 'string',
-          description: 'Directorio de trabajo (opcional). Ej: C:\\Users\\M11\\rentnft-bot',
-        },
+        command: { type: 'string', description: `Comando ${IS_WINDOWS ? 'PowerShell' : 'bash'} a ejecutar` },
+        cwd: { type: 'string', description: 'Directorio de trabajo (opcional)' },
       },
       required: ['command'],
     },
   },
   {
     name: 'read_file',
-    description: 'Lee el contenido de un archivo del sistema.',
+    description: 'Lee el contenido de un archivo.',
     input_schema: {
       type: 'object',
       properties: {
@@ -101,7 +103,7 @@ const TOOLS = [
   },
   {
     name: 'list_directory',
-    description: 'Lista archivos y subcarpetas de un directorio.',
+    description: 'Lista archivos y carpetas de un directorio.',
     input_schema: {
       type: 'object',
       properties: {
@@ -112,15 +114,15 @@ const TOOLS = [
   },
 ];
 
-// ── Ejecución de herramientas ─────────────────────────────────────────────────
+// ── Ejecución de herramientas ──────────────────────────────────────────────────
 async function executeTool(name, input) {
   try {
     switch (name) {
       case 'execute_command': {
         const opts = {
-          shell:     'powershell.exe',
+          shell:     SHELL,
           timeout:   120_000,
-          cwd:       input.cwd || undefined,
+          cwd:       input.cwd || WORK_DIR,
           encoding:  'utf8',
           maxBuffer: 10 * 1024 * 1024,
         };
@@ -143,10 +145,8 @@ async function executeTool(name, input) {
         return `✓ Archivo escrito: ${input.file_path}`;
 
       case 'edit_file': {
-        let content = fs.readFileSync(input.file_path, 'utf8');
-        if (!content.includes(input.old_text)) {
-          return `Error: texto no encontrado en ${input.file_path}`;
-        }
+        const content = fs.readFileSync(input.file_path, 'utf8');
+        if (!content.includes(input.old_text)) return `Error: texto no encontrado en ${input.file_path}`;
         fs.writeFileSync(input.file_path, content.replace(input.old_text, input.new_text), 'utf8');
         return `✓ Archivo editado: ${input.file_path}`;
       }
@@ -164,13 +164,13 @@ async function executeTool(name, input) {
   }
 }
 
-// ── Bucle agente (tool-use loop) ──────────────────────────────────────────────
+// ── Bucle agente ───────────────────────────────────────────────────────────────
 async function runAgent(chatId, userMessage, ctx) {
   if (!conversations.has(chatId)) conversations.set(chatId, []);
   const history = conversations.get(chatId);
   history.push({ role: 'user', content: userMessage });
 
-  let messages = [...history];
+  let messages  = [...history];
   let finalText = '';
 
   while (true) {
@@ -185,7 +185,6 @@ async function runAgent(chatId, userMessage, ctx) {
     const toolBlocks = response.content.filter(b => b.type === 'tool_use');
     const textBlocks = response.content.filter(b => b.type === 'text');
 
-    // Sin llamadas a herramientas → respuesta final
     if (response.stop_reason === 'end_turn' || toolBlocks.length === 0) {
       finalText = textBlocks.map(b => b.text).join('');
       messages.push({ role: 'assistant', content: response.content });
@@ -194,15 +193,12 @@ async function runAgent(chatId, userMessage, ctx) {
 
     messages.push({ role: 'assistant', content: response.content });
 
-    // Notificar al usuario qué herramientas se están usando
     for (const block of toolBlocks) {
-      const label = toolLabel(block);
-      await ctx.reply(label, { parse_mode: 'Markdown' }).catch(() =>
+      await ctx.reply(toolLabel(block), { parse_mode: 'Markdown' }).catch(() =>
         ctx.reply(`⚙️ ${block.name}…`)
       );
     }
 
-    // Ejecutar herramientas y recoger resultados
     const toolResults = [];
     for (const block of toolBlocks) {
       const result = await executeTool(block.name, block.input);
@@ -216,9 +212,7 @@ async function runAgent(chatId, userMessage, ctx) {
     messages.push({ role: 'user', content: toolResults });
   }
 
-  // Mantener historial acotado (últimos 40 mensajes)
   conversations.set(chatId, messages.slice(-40));
-
   return finalText || '(Sin respuesta)';
 }
 
@@ -226,40 +220,38 @@ function toolLabel(block) {
   const { name, input } = block;
   const truncate = (s, n = 80) => String(s).length > n ? String(s).slice(0, n) + '…' : String(s);
   switch (name) {
-    case 'execute_command':   return `🔧 \`${truncate(input.command)}\``;
-    case 'write_file':        return `📝 Escribiendo \`${input.file_path}\``;
-    case 'read_file':         return `📖 Leyendo \`${input.file_path}\``;
-    case 'edit_file':         return `✏️ Editando \`${input.file_path}\``;
-    case 'list_directory':    return `📂 Listando \`${input.dir_path}\``;
-    default:                  return `🔧 ${name}…`;
+    case 'execute_command': return `🔧 \`${truncate(input.command)}\``;
+    case 'write_file':      return `📝 Escribiendo \`${input.file_path}\``;
+    case 'read_file':       return `📖 Leyendo \`${input.file_path}\``;
+    case 'edit_file':       return `✏️ Editando \`${input.file_path}\``;
+    case 'list_directory':  return `📂 Listando \`${input.dir_path}\``;
+    default:                return `🔧 ${name}…`;
   }
 }
 
-// ── Middleware de autorización ────────────────────────────────────────────────
+// ── Middleware de autorización ─────────────────────────────────────────────────
 bot.use(async (ctx, next) => {
-  // /myid bypasses auth so anyone can check their real Telegram ID
   if (ctx.message?.text?.startsWith('/myid')) {
     return ctx.reply(`Tu Telegram ID: \`${ctx.from?.id}\`\nNombre: ${ctx.from?.first_name || ''}`, { parse_mode: 'Markdown' });
   }
   const incomingId = String(ctx.from?.id ?? '');
-  const logLine = `[AUTH] incoming=${incomingId} owner=${OWNER_ID} match=${incomingId === OWNER_ID}\n`;
-  console.log(logLine.trim());
-  fs.appendFileSync(path.join(__dirname, 'auth.log'), `${new Date().toISOString()} ${logLine}`);
   if (OWNER_ID && incomingId !== OWNER_ID) {
+    console.log(`[AUTH] Bloqueado: ${incomingId}`);
     return ctx.reply('⛔ No autorizado.');
   }
   return next();
 });
 
-// ── Comandos ──────────────────────────────────────────────────────────────────
+// ── Comandos ───────────────────────────────────────────────────────────────────
 bot.start((ctx) =>
   ctx.reply(
     '🤖 *Asistente AI activo*\n\n' +
-    'Tengo acceso a tu PC y puedo:\n' +
+    `Ejecutándose en: ${IS_WINDOWS ? '🖥️ Windows local' : '☁️ Railway (Linux)'}\n\n` +
+    'Puedo:\n' +
     '• Crear y editar archivos de código\n' +
-    '• Ejecutar comandos PowerShell\n' +
-    '• Deployar en Railway\n' +
-    '• Gestionar tus proyectos\n\n' +
+    `• Ejecutar comandos ${IS_WINDOWS ? 'PowerShell' : 'bash'}\n` +
+    '• Gestionar repos de GitHub\n' +
+    '• Instalar dependencias y deployar\n\n' +
     'Escríbeme lo que necesitas 👇',
     { parse_mode: 'Markdown' }
   )
@@ -270,8 +262,9 @@ bot.help((ctx) =>
     '*Comandos disponibles:*\n' +
     '/start — Bienvenida\n' +
     '/help — Esta ayuda\n' +
-    '/reset — Borrar historial de conversación\n' +
-    '/projects — Ver proyectos disponibles\n\n' +
+    '/reset — Borrar historial\n' +
+    '/status — Estado del servidor\n' +
+    '/projects — Proyectos en GitHub\n\n' +
     'O simplemente escríbeme lo que necesitas.',
     { parse_mode: 'Markdown' }
   )
@@ -279,24 +272,37 @@ bot.help((ctx) =>
 
 bot.command('reset', (ctx) => {
   conversations.delete(ctx.chat.id);
-  ctx.reply('🗑️ Historial de conversación limpiado.');
+  ctx.reply('🗑️ Historial limpiado.');
+});
+
+bot.command('status', async (ctx) => {
+  const uptime  = Math.floor(process.uptime());
+  const mem     = Math.round(process.memoryUsage().rss / 1024 / 1024);
+  const platform = IS_WINDOWS ? 'Windows local' : 'Railway (Linux)';
+  ctx.reply(
+    `*Estado del servidor*\n\n` +
+    `🖥️ Plataforma: ${platform}\n` +
+    `⏱️ Uptime: ${uptime}s\n` +
+    `🧠 Memoria: ${mem} MB\n` +
+    `🤖 Modelo: ${MODEL}`,
+    { parse_mode: 'Markdown' }
+  );
 });
 
 bot.command('projects', (ctx) =>
   ctx.reply(
-    '*Proyectos configurados:*\n' +
-    '📁 `C:\\Users\\M11\\rentnft-bot`\n' +
-    '📁 `C:\\Users\\M11\\motion-ai-agent`',
-    { parse_mode: 'Markdown' }
+    '*Proyectos en GitHub:*\n\n' +
+    '📦 [motion-ai-agent](https://github.com/saloumircash-sys/motion-ai-agent)\n' +
+    '📦 [rentnft-bot](https://github.com/saloumircash-sys/rentnft-bot)',
+    { parse_mode: 'Markdown', disable_web_page_preview: true }
   )
 );
 
-// ── Mensajes de texto ─────────────────────────────────────────────────────────
+// ── Mensajes de texto ──────────────────────────────────────────────────────────
 bot.on('text', async (ctx) => {
   const chatId      = ctx.chat.id;
   const userMessage = ctx.message.text;
 
-  // Indicador de escritura mientras el agente procesa
   await ctx.sendChatAction('typing').catch(() => {});
   const typingInterval = setInterval(() => ctx.sendChatAction('typing').catch(() => {}), 4000);
 
@@ -304,7 +310,6 @@ bot.on('text', async (ctx) => {
     const response = await runAgent(chatId, userMessage, ctx);
     clearInterval(typingInterval);
 
-    // Telegram limita mensajes a 4096 caracteres
     const MAX = 4000;
     if (response.length <= MAX) {
       await ctx.reply(response);
@@ -320,12 +325,12 @@ bot.on('text', async (ctx) => {
   }
 });
 
-// ── Iniciar bot ───────────────────────────────────────────────────────────────
+// ── Iniciar bot ────────────────────────────────────────────────────────────────
 bot.launch().then(() => {
-  console.log(`🚀 Bot iniciado | Modelo: ${MODEL}`);
+  console.log(`🚀 Bot iniciado | Plataforma: ${IS_WINDOWS ? 'Windows' : 'Railway/Linux'} | Modelo: ${MODEL}`);
   console.log(OWNER_ID
     ? `🔒 Acceso restringido → Telegram ID: ${OWNER_ID}`
-    : '⚠️  Sin restricción de acceso (configura TELEGRAM_OWNER_ID para mayor seguridad)'
+    : '⚠️  Sin restricción de acceso'
   );
 });
 

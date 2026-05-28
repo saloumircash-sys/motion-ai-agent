@@ -1,16 +1,20 @@
 {
   "name": "motion-ai-agent",
   "version": "1.0.0",
-  "description": "",
+  "description": "Telegram AI agent with full server access, deployable on Railway",
   "main": "index.js",
   "scripts": {
-    "start": "node --use-system-ca index.js",
-    "dev": "node --use-system-ca --watch index.js"
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "dev:win": "node --use-system-ca --watch index.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.99.0",
     "dotenv": "^17.4.2",
