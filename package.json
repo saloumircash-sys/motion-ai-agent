@@ -1,0 +1,19 @@
+{
+  "name": "motion-ai-agent",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node --use-system-ca index.js",
+    "dev": "node --use-system-ca --watch index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.99.0",
+    "dotenv": "^17.4.2",
+    "telegraf": "^4.16.3"
+  }
+}

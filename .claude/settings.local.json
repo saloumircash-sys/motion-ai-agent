@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(claude-api)",
+      "Bash(Start-Process -WindowStyle Hidden -FilePath \"node\" -ArgumentList \"--use-system-ca\", \"C:\\\\Users\\\\M11\\\\motion-ai-agent\\\\index.js\" -WorkingDirectory \"C:\\\\Users\\\\M11\\\\motion-ai-agent\" -RedirectStandardOutput \"C:\\\\Users\\\\M11\\\\motion-ai-agent\\\\bot.log\" -RedirectStandardError \"C:\\\\Users\\\\M11\\\\motion-ai-agent\\\\bot-err.log\")",
+      "Bash(Start-Sleep -Seconds 3)",
+      "Bash(Get-Content \"C:\\\\Users\\\\M11\\\\motion-ai-agent\\\\bot.log\" -ErrorAction SilentlyContinue)",
+      "Bash(Get-Content \"C:\\\\Users\\\\M11\\\\motion-ai-agent\\\\bot-err.log\" -ErrorAction SilentlyContinue)",
+      "PowerShell(Start-Process -WindowStyle Hidden -FilePath \"node\" -ArgumentList \"--use-system-ca\", \"C:\\\\Users\\\\M11\\\\motion-ai-agent\\\\index.js\" -WorkingDirectory \"C:\\\\Users\\\\M11\\\\motion-ai-agent\" -RedirectStandardOutput \"C:\\\\Users\\\\M11\\\\motion-ai-agent\\\\bot.log\" -RedirectStandardError \"C:\\\\Users\\\\M11\\\\motion-ai-agent\\\\bot-err.log\")",
+      "PowerShell(Get-Process *)",
+      "PowerShell(Receive-Job *)",
+      "PowerShell(Stop-Process *)"
+    ]
+  }
+}
