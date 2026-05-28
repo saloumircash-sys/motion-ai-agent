@@ -648,13 +648,45 @@ Solo el guión, sin meta-comentarios.`;
   }
 }
 
+// ── Limpieza de historial ─────────────────────────────────────────────────────
+// Evita el error 400 de Anthropic cuando slice(-40) corta en medio de un par
+// tool_use / tool_result dejando tool_results huérfanos al inicio del array.
+function sanitizeHistory(msgs) {
+  // 1. Descartar desde el inicio hasta el primer user-text limpio
+  let start = 0;
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    if (m.role === 'user') {
+      const blocks = Array.isArray(m.content) ? m.content : [];
+      // Mensaje de usuario normal (no pure tool_result)
+      if (!blocks.length || blocks.some(b => b.type === 'text')) { start = i; break; }
+    }
+  }
+  msgs = msgs.slice(start);
+
+  // 2. Eliminar del final cualquier assistant con solo tool_use sin tool_result siguiente
+  while (msgs.length > 0) {
+    const last = msgs[msgs.length - 1];
+    if (last.role === 'assistant') {
+      const blocks = Array.isArray(last.content) ? last.content : [];
+      if (blocks.length && blocks.every(b => b.type === 'tool_use')) {
+        msgs = msgs.slice(0, -1);
+        continue;
+      }
+    }
+    break;
+  }
+
+  return msgs;
+}
+
 // ── Bucle agente ───────────────────────────────────────────────────────────────
 async function runAgent(chatId, userMessage, ctx) {
   if (!conversations.has(chatId)) conversations.set(chatId, []);
   const history = conversations.get(chatId);
   history.push({ role: 'user', content: userMessage });
 
-  let messages  = [...history];
+  let messages = sanitizeHistory([...history]);
   let finalText = '';
 
   while (true) {
@@ -690,7 +722,7 @@ async function runAgent(chatId, userMessage, ctx) {
     messages.push({ role: 'user', content: toolResults });
   }
 
-  conversations.set(chatId, messages.slice(-40));
+  conversations.set(chatId, sanitizeHistory(messages.slice(-40)));
   return finalText || '(Sin respuesta)';
 }
 
