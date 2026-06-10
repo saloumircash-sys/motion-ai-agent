@@ -8,6 +8,7 @@ const util = require('util');
 const https = require('https');
 
 const execAsync = util.promisify(exec);
+const { kling } = require('./plugins-bridge');
 
 if (!process.env.TELEGRAM_TOKEN || !process.env.ANTHROPIC_API_KEY) {
   console.error('❌ Faltan variables de entorno: TELEGRAM_TOKEN y/o ANTHROPIC_API_KEY');
@@ -78,6 +79,7 @@ Directorio de videos: ${VIDEOS_DIR}
 
 ═══ CAPACIDADES CLOUD ═══
 • upload_youtube     → sube video MP4 a YouTube (requiere YOUTUBE_REFRESH_TOKEN)
+• kling_image2video  → anima una imagen a video con Kling AI (requiere KLING_ACCESS_KEY/SECRET_KEY)
 • github_create_repo → crea nuevo repo GitHub (requiere GITHUB_TOKEN)
 • github_push_file   → sube/actualiza código en GitHub → Railway auto-deploya
 • execute_command    → cualquier comando bash: ffmpeg, curl, git, npm, etc.
@@ -143,6 +145,22 @@ const TOOLS = [
         thumbnail:   { type: 'string', description: 'Ruta a imagen JPG para thumbnail (opcional, max 2MB)' },
       },
       required: ['file_path', 'title'],
+    },
+  },
+  {
+    name: 'kling_image2video',
+    description: 'Anima una imagen a video corto con Kling AI (image2video). Requiere KLING_ACCESS_KEY y KLING_SECRET_KEY configurados.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        image_path:      { type: 'string', description: 'Ruta absoluta a la imagen de origen (jpg/png)' },
+        prompt:          { type: 'string', description: 'Descripción del movimiento/escena deseada' },
+        negative_prompt: { type: 'string', description: 'Qué evitar en el video (opcional)' },
+        output_path:     { type: 'string', description: 'Ruta absoluta donde guardar el .mp4 resultante' },
+        duration:        { type: 'string', enum: ['5', '10'], description: 'Duración del clip en segundos (default: 5)' },
+        mode:            { type: 'string', enum: ['std', 'pro'], description: 'Calidad (default: std)' },
+      },
+      required: ['image_path', 'prompt', 'output_path'],
     },
   },
   {
@@ -547,6 +565,19 @@ Solo el guión, sin meta-comentarios.`;
         ].join('\n');
       }
 
+      case 'kling_image2video': {
+        const r = await kling.image2video({
+          imagePath: input.image_path,
+          prompt: input.prompt,
+          negativePrompt: input.negative_prompt,
+          outputPath: input.output_path,
+          duration: input.duration,
+          mode: input.mode,
+        });
+        if (!r.success) return `❌ Kling error: ${r.error}`;
+        return `✅ Video generado: ${r.path}\n🔗 ${r.videoUrl}`;
+      }
+
       case 'list_voices': {
         if (!EL_KEY) return 'Error: ELEVENLABS_API_KEY no configurada';
         const data = await elevenLabsRequest('GET', '/voices');
@@ -733,6 +764,7 @@ function toolLabel(block) {
     case 'generate_script':    return `✍️ Generando guión *${input.channel}*: ${trunc(input.topic, 60)}`;
     case 'generate_voice':     return `🎙️ Generando voz *${input.channel}*…`;
     case 'upload_youtube':     return `📤 Subiendo a YouTube: *${trunc(input.title, 60)}*`;
+    case 'kling_image2video':  return `🎬 Generando video con Kling AI...`;
     case 'list_voices':        return `🎙️ Listando voces ElevenLabs…`;
     case 'github_create_repo': return `📦 Creando repo GitHub: *${input.name}*`;
     case 'github_push_file':   return `🚀 Subiendo a GitHub: \`${input.file_path}\` → *${input.repo}*`;
@@ -851,6 +883,43 @@ bot.command('projects', (ctx) =>
     { parse_mode: 'Markdown', disable_web_page_preview: true }
   )
 );
+
+// ── Fotos: guardar automáticamente en Images ──────────────────────────────────
+const PHOTOS_SAVE_DIR = process.env.PHOTOS_DIR ||
+  'C:/Users/M11/Desktop/YouTube_Pipeline/EN_Motivation_Finance/Images';
+
+function nextPhotoPrefix(dir) {
+  try {
+    const nums = fs.readdirSync(dir).map(f => parseInt(f.slice(0, 2))).filter(n => !isNaN(n));
+    return nums.length ? Math.max(...nums) + 1 : 1;
+  } catch { return 1; }
+}
+
+bot.on('photo', async (ctx) => {
+  if (OWNER_ID && String(ctx.from?.id) !== OWNER_ID) return;
+  const best   = ctx.message.photo[ctx.message.photo.length - 1];
+  const prefix = String(nextPhotoPrefix(PHOTOS_SAVE_DIR)).padStart(2, '0');
+  const label  = (ctx.message.caption || `telegram_photo`)
+    .replace(/[^a-z0-9_]/gi, '_').slice(0, 30).replace(/_+/g, '_').replace(/^_|_$/g, '');
+  const dest = path.join(PHOTOS_SAVE_DIR, `${prefix}_${label}.jpg`);
+
+  try {
+    fs.mkdirSync(PHOTOS_SAVE_DIR, { recursive: true });
+    const fileInfo = await ctx.telegram.getFile(best.file_id);
+    const fileUrl  = `https://api.telegram.org/file/bot${process.env.TELEGRAM_TOKEN}/${fileInfo.file_path}`;
+    const data = await new Promise((resolve, reject) => {
+      https.get(fileUrl, res => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => resolve(Buffer.concat(chunks)));
+      }).on('error', reject);
+    });
+    fs.writeFileSync(dest, data);
+    await ctx.reply(`✅ Foto guardada: ${path.basename(dest)} (${Math.round(data.length / 1024)}KB)`);
+  } catch (e) {
+    await ctx.reply(`❌ Error al guardar foto: ${e.message}`);
+  }
+});
 
 // ── Mensajes de texto ──────────────────────────────────────────────────────────
 bot.on('text', async (ctx) => {
